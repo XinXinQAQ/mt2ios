@@ -23,24 +23,101 @@ public typealias FSResult<T> = Result<T, FSMessage>
 public enum SandboxFS {
     private static var fm: FileManager { .default }
 
+    // MARK: - 目录枚举
+    //
+    // 两条路：
+    //   1. readdir —— 快，但只有拿到该目录 sandbox extension 之后才被允许；
+    //   2. fsgetpath(inode) 扫描 —— 慢，但不需要目录读权限。
+    //
+    // 容器根（/var/mobile/Containers/Data/Application）这类位置，扩展只能拿到
+    // “某个具体容器”，拿不到父目录，所以第 1 条会失败，必须落到第 2 条。
+
+    /// inode 扫描上限。越大越全、越慢。可在 UserDefaults 里用 mt2.maxInode 覆盖。
+    public static var scanMaxInode: Int64 {
+        let stored = UserDefaults.standard.object(forKey: "mt2.maxInode") as? NSNumber
+        let value = stored?.int64Value ?? 2_000_000
+        return max(100_000, value)
+    }
+
+    public struct DirListing {
+        public var paths: [String]
+        public var fromReaddir: Bool
+    }
+
+    private static var listingCache: [String: (listing: DirListing, at: Date)] = [:]
+    private static let cacheLock = NSLock()
+    private static let cacheTTL: TimeInterval = 25
+
+    /// 列出目录的直接子项（完整路径）。两条路都失败时返回 nil。
+    public static func listing(of dir: String, useCache: Bool = true) -> DirListing? {
+        let path = SandboxEscape.normalize(dir)
+
+        if useCache {
+            cacheLock.lock()
+            if let cached = listingCache[path], Date().timeIntervalSince(cached.at) < cacheTTL {
+                cacheLock.unlock()
+                return cached.listing
+            }
+            cacheLock.unlock()
+        }
+
+        var result: DirListing?
+
+        if let names = try? fm.contentsOfDirectory(atPath: path) {
+            result = DirListing(paths: names.map { (path as NSString).appendingPathComponent($0) },
+                                fromReaddir: true)
+        } else {
+            let scanned: [String] = path.withCString { cPath in
+                guard let raw = mt2_list_paths(cPath, scanMaxInode) else { return [] }
+                defer { free(raw) }
+                let text = String(cString: raw)
+                guard !text.isEmpty else { return [] }
+                return text.split(separator: "\n").map(String.init)
+            }
+            if !scanned.isEmpty {
+                result = DirListing(paths: scanned, fromReaddir: false)
+            }
+        }
+
+        if let result {
+            cacheLock.lock()
+            listingCache[path] = (result, Date())
+            cacheLock.unlock()
+        }
+        return result
+    }
+
+    public static func invalidateListing(for dir: String? = nil) {
+        cacheLock.lock()
+        if let dir {
+            listingCache.removeValue(forKey: SandboxEscape.normalize(dir))
+        } else {
+            listingCache.removeAll()
+        }
+        cacheLock.unlock()
+    }
+
     // MARK: - Reading
 
     public static func entries(in dir: String,
                                includeHidden: Bool,
                                sort: SortMode) -> FSResult<[FSItem]> {
         let path = SandboxEscape.normalize(dir)
-        if let error = SandboxEscape.shared.ensureAccess(to: path) {
-            return .failure(FSMessage(error))
-        }
-        guard let names = try? fm.contentsOfDirectory(atPath: path) else {
-            return .failure(FSMessage("无法读取目录\n\(path)"))
+
+        // 授权失败不算致命：列表可能靠 inode 扫描照样出来，只是读写会失败。
+        let grantError = SandboxEscape.shared.ensureAccess(to: path)
+
+        guard let listing = listing(of: path) else {
+            let hint = grantError ?? "readdir 被拒绝，inode 扫描也没有结果"
+            return .failure(FSMessage("无法读取目录\n\(hint)\n\(path)"))
         }
 
         var items: [FSItem] = []
-        items.reserveCapacity(names.count)
-        for name in names {
+        items.reserveCapacity(listing.paths.count)
+        for child in listing.paths {
+            let name = (child as NSString).lastPathComponent
             if !includeHidden && name.hasPrefix(".") { continue }
-            items.append(FSItem(path: (path as NSString).appendingPathComponent(name)))
+            items.append(FSItem(path: child))
         }
         return .success(sorted(items, by: sort))
     }
@@ -138,12 +215,14 @@ public enum SandboxFS {
         }
         do {
             try data.write(to: URL(fileURLWithPath: path), options: .atomic)
+            invalidateListing()
             return nil
         } catch {
             // .atomic writes a temp file next to the target; some system dirs
             // block that, fall back to an in-place write.
             do {
                 try data.write(to: URL(fileURLWithPath: path))
+                invalidateListing()
                 return nil
             } catch {
                 return error.localizedDescription
@@ -156,6 +235,7 @@ public enum SandboxFS {
         let target = (dir as NSString).appendingPathComponent(name)
         do {
             try fm.createDirectory(atPath: target, withIntermediateDirectories: false)
+            invalidateListing()
             return nil
         } catch {
             return error.localizedDescription
@@ -167,6 +247,7 @@ public enum SandboxFS {
         let target = (dir as NSString).appendingPathComponent(name)
         if fm.fileExists(atPath: target) { return "同名文件已存在" }
         guard fm.createFile(atPath: target, contents: data) else { return "创建失败" }
+        invalidateListing()
         return nil
     }
 
@@ -176,6 +257,7 @@ public enum SandboxFS {
         let dst = uniqueDestination(for: src, in: dir)
         do {
             try fm.copyItem(atPath: src, toPath: dst)
+            invalidateListing()
             return nil
         } catch {
             return error.localizedDescription
@@ -188,8 +270,12 @@ public enum SandboxFS {
         let dst = uniqueDestination(for: src, in: dir)
         do {
             // rename(2) keeps metadata and is atomic when both paths share a volume.
-            if Darwin.rename(src, dst) == 0 { return nil }
+            if Darwin.rename(src, dst) == 0 {
+                invalidateListing()
+                return nil
+            }
             try fm.moveItem(atPath: src, toPath: dst)
+            invalidateListing()
             return nil
         } catch {
             return error.localizedDescription
@@ -203,6 +289,7 @@ public enum SandboxFS {
         if fm.fileExists(atPath: dst) { return "目标已存在" }
         do {
             try fm.moveItem(atPath: src, toPath: dst)
+            invalidateListing()
             return nil
         } catch {
             return error.localizedDescription
@@ -213,6 +300,7 @@ public enum SandboxFS {
         if let error = SandboxEscape.shared.ensureAccess(to: path) { return error }
         do {
             try fm.removeItem(atPath: path)
+            invalidateListing()
             return nil
         } catch {
             return error.localizedDescription

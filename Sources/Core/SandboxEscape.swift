@@ -151,6 +151,42 @@ public final class SandboxEscape {
         lock.unlock()
     }
 
+    /// 现场跑一次探针，把原始返回码打出来 —— 排查“打不开”比猜有用得多。
+    public func selfTest() -> [String] {
+        var out: [String] = []
+        let groupRoot = FileManager.default.containerURL(forSecurityApplicationGroupIdentifier: appGroup)
+        out.append("group 容器: \(groupRoot?.path ?? "nil")")
+
+        if let groupRoot {
+            let library = groupRoot.appendingPathComponent("Library").path
+            out.append("Library 可写: \(FileManager.default.isWritableFile(atPath: library))")
+        }
+
+        for probe in ["/var/mobile/Media", "/var/mobile/Library"] {
+            let handle = worse_query(probe, appGroup, false, false)
+            guard handle >= 0 else {
+                out.append("探针 \(probe) -> \(handle)：\(Self.describe(handle: handle))")
+                continue
+            }
+
+            let readable = FileManager.default.isReadableFile(atPath: probe)
+            let readdirCount = (try? FileManager.default.contentsOfDirectory(atPath: probe).count) ?? -1
+
+            var scanCount = -1
+            if readdirCount < 0 {
+                probe.withCString { cPath in
+                    guard let raw = mt2_list_paths(cPath, min(SandboxFS.scanMaxInode, 200_000)) else { return }
+                    defer { free(raw) }
+                    scanCount = String(cString: raw).split(separator: "\n").count
+                }
+            }
+
+            out.append("探针 \(probe) -> handle \(handle) | 可读:\(readable) readdir:\(readdirCount) inode扫描:\(scanCount)")
+            worse_query_release(handle)
+        }
+        return out
+    }
+
     // MARK: - Helpers
 
     public static func normalize(_ path: String) -> String {

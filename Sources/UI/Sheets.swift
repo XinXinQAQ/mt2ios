@@ -295,6 +295,7 @@ struct AppListSheet: View {
 struct AboutSheet: View {
     @Environment(\.dismiss) private var dismiss
     @State private var lines: [String] = []
+    @AppStorage("mt2.maxInode") private var maxInode: Int = 2_000_000
 
     var body: some View {
         NavigationStack {
@@ -308,6 +309,26 @@ struct AboutSheet: View {
                                 .textSelection(.enabled)
                         }
                     }
+                }
+
+                Section {
+                    HStack {
+                        Text("inode 扫描上限").font(.system(size: 12))
+                        Spacer()
+                        TextField("2000000", value: $maxInode, format: .number)
+                            .keyboardType(.numberPad)
+                            .multilineTextAlignment(.trailing)
+                            .frame(width: 110)
+                    }
+                    Button("清空目录缓存并重扫") {
+                        SandboxFS.invalidateListing()
+                        lines = buildLines()
+                    }
+                } header: {
+                    Text("枚举")
+                } footer: {
+                    Text("容器根目录没有 readdir 权限，列表靠 fsgetpath 扫 inode 得到。调大更全更慢，调小更快但可能漏容器。")
+                        .font(.system(size: 10))
                 }
 
                 Section("说明") {
@@ -334,6 +355,8 @@ struct AboutSheet: View {
         SandboxEscape.shared.invalidateDiagnostics()
         var out = SandboxEscape.shared.diagnostics.components(separatedBy: "\n")
         out.append("已加载应用: \(AppIndex.shared.allApps().count)")
+        out.append("inode 扫描上限: \(SandboxFS.scanMaxInode)")
+        out.append(contentsOf: SandboxEscape.shared.selfTest())
         out.append("UID: \(getuid())  EUID: \(geteuid())")
         out.append("构建: \(Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "?")")
         return out

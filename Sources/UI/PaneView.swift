@@ -159,7 +159,17 @@ struct PaneView: View {
         .overlay(alignment: .trailing) { scrollbar }
         .overlay {
             if pane.loading && pane.items.isEmpty {
-                ProgressView()
+                VStack(spacing: 6) {
+                    ProgressView()
+                    Text("正在枚举目录…")
+                        .font(.system(size: 10))
+                        .foregroundStyle(Theme.gray)
+                    Text("容器根目录没有 readdir 权限时走 inode 扫描，首次会比较慢")
+                        .font(.system(size: 9))
+                        .foregroundStyle(Theme.gray.opacity(0.7))
+                        .multilineTextAlignment(.center)
+                        .padding(.horizontal, 10)
+                }
             }
         }
     }

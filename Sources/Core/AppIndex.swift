@@ -53,46 +53,52 @@ public final class AppIndex: ObservableObject {
         }
     }
 
+    /// 逐个容器授权会消耗 sandbox extension，几百个应用时限制一下总量。
+    private static let maxContainersResolved = 220
+
     private static func scan() -> (byBundleID: [String: AppRecord], byContainer: [String: AppRecord]) {
-        let fm = FileManager.default
         var names: [String: (name: String, path: String)] = [:]
         var records: [String: AppRecord] = [:]
         var byContainer: [String: AppRecord] = [:]
 
-        // 1. Bundle tree -> bundle id, display name, .app path
+        // 1. Bundle 树 -> bundle id / 显示名 / .app 路径
+        //    根目录本身大概率没有 readdir 权限，SandboxFS.listing 会退回 inode 扫描。
         let bundleRoot = "/var/containers/Bundle/Application"
-        if SandboxEscape.shared.ensureAccess(to: bundleRoot) == nil {
-            for uuid in (try? fm.contentsOfDirectory(atPath: bundleRoot)) ?? [] {
-                let dir = bundleRoot + "/" + uuid
-                for entry in (try? fm.contentsOfDirectory(atPath: dir)) ?? [] where entry.hasSuffix(".app") {
-                    let appPath = dir + "/" + entry
-                    guard let info = NSDictionary(contentsOfFile: appPath + "/Info.plist"),
-                          let bundleID = info["CFBundleIdentifier"] as? String else { continue }
-                    let display = (info["CFBundleDisplayName"] as? String)
-                        ?? (info["CFBundleName"] as? String)
-                        ?? bundleID
-                    names[bundleID] = (display, appPath)
-                }
+        _ = SandboxEscape.shared.ensureAccess(to: bundleRoot)
+        let bundleUUIDs = SandboxFS.listing(of: bundleRoot)?.paths ?? []
+
+        for uuidDir in bundleUUIDs.prefix(maxContainersResolved) {
+            // 读 .app 里的 Info.plist 必须先拿到该 bundle 目录的扩展
+            _ = SandboxEscape.shared.ensureAccess(to: uuidDir)
+            for appDir in SandboxFS.listing(of: uuidDir)?.paths ?? [] where appDir.hasSuffix(".app") {
+                let infoPath = appDir + "/Info.plist"
+                guard let info = NSDictionary(contentsOfFile: infoPath),
+                      let bundleID = info["CFBundleIdentifier"] as? String else { continue }
+                let display = (info["CFBundleDisplayName"] as? String)
+                    ?? (info["CFBundleName"] as? String)
+                    ?? bundleID
+                names[bundleID] = (display, appDir)
             }
         }
 
-        // 2. Data containers -> bundle id
+        // 2. 数据容器 -> bundle id
         let dataRoot = "/var/mobile/Containers/Data/Application"
-        if SandboxEscape.shared.ensureAccess(to: dataRoot) == nil {
-            for uuid in (try? fm.contentsOfDirectory(atPath: dataRoot)) ?? [] {
-                let container = dataRoot + "/" + uuid
-                let metaPath = container + "/.com.apple.mobile_container_manager.metadata.plist"
-                guard let meta = NSDictionary(contentsOfFile: metaPath),
-                      let bundleID = meta["MCMMetadataIdentifier"] as? String else { continue }
+        _ = SandboxEscape.shared.ensureAccess(to: dataRoot)
+        let dataContainers = SandboxFS.listing(of: dataRoot)?.paths ?? []
 
-                let info = names[bundleID]
-                let record = AppRecord(bundleID: bundleID,
-                                       name: info?.name ?? bundleID,
-                                       bundlePath: info?.path,
-                                       dataContainer: container)
-                records[bundleID] = record
-                byContainer[uuid] = record
-            }
+        for container in dataContainers.prefix(maxContainersResolved) {
+            _ = SandboxEscape.shared.ensureAccess(to: container)
+            let metaPath = container + "/.com.apple.mobile_container_manager.metadata.plist"
+            guard let meta = NSDictionary(contentsOfFile: metaPath),
+                  let bundleID = meta["MCMMetadataIdentifier"] as? String else { continue }
+
+            let info = names[bundleID]
+            let record = AppRecord(bundleID: bundleID,
+                                   name: info?.name ?? bundleID,
+                                   bundlePath: info?.path,
+                                   dataContainer: container)
+            records[bundleID] = record
+            byContainer[(container as NSString).lastPathComponent] = record
         }
 
         return (records, byContainer)

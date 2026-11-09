@@ -130,6 +130,31 @@ checkout → 切最新 Xcode → brew install xcodegen → xcodegen generate
 
 免费个人团队通常勾不上 App Groups（能力受限于付费账号），这种情况下逃逸必然失败，App 会明确提示"签名里没有 App Groups"。App 内的 **自检** 面板会直接告诉你 `容器可用: 是/否`。
 
+## 为什么列表需要两套枚举
+
+`worse_query` 给出的是**某个具体路径**的 sandbox extension。这意味着：
+
+- 你能读写 `/var/mobile/Containers/Data/Application/<UUID>`，但**拿不到它的父目录**；
+- 在容器根这一层，`readdir` 会被沙盒拒绝，`FileManager.contentsOfDirectory` 直接返回空。
+
+所以枚举有两条路（`SandboxFS.listing(of:)`）：
+
+1. `readdir` —— 快，但只对**已经拿到扩展**的目录有效；
+2. `fsgetpath(fsid, inode)` 扫描 —— `Sources/Exploit/PathLister.m`，把 1...maxInode 里的每个 inode 反查成路径，只保留目标目录的直接子项。不需要目录读权限，代价是慢。
+
+容器根、Bundle 根这类位置走第 2 条，其余走第 1 条。`maxInode` 默认 200 万，可在 App 内 **自检 → 枚举** 里调（调小更快但可能漏容器）。列表结果缓存 25 秒，写操作会主动失效。
+
+**自检面板**会现场跑一次探针，打印 `worse_query` 的原始返回码、readdir 项数、inode 扫描项数：
+
+```
+group 容器: /private/var/mobile/Containers/Shared/AppGroup/XXXX
+Library 可写: true
+探针 /var/mobile/Media -> handle 12 | 可读:true readdir:8 inode扫描:-1
+探针 /var/mobile/Library -> -1：拿不到 App Group 容器（签名缺少 ...）
+```
+
+`handle` 是负数时对照 `SandboxEscape.describe(handle:)` 的映射就能定位是哪一步失败。
+
 ## 支持范围
 
 `worse_query` 目前未修复的版本：iOS 26.0 – 26.7.2、27.0 – 27.2、27.3 beta 1。iOS 26.x 上 `container_query_operation_set_flags` 对 AppGroup 容器需要换一组 flag，代码里已按系统主版本自动切换。
