@@ -1,0 +1,130 @@
+name: Build IPA
+
+# 推送 / 手动触发 / PR 都会云编译。产物是未签名 ipa，交给 SideStore、Sideloadly、
+# AltStore 等工具用你自己的证书重签后安装。
+
+on:
+  push:
+    branches: [main]
+    paths-ignore:
+      - "**.md"
+      - ".gitignore"
+  pull_request:
+    paths-ignore:
+      - "**.md"
+  workflow_dispatch:
+    inputs:
+      bundle_id:
+        description: "Bundle ID（留空用仓库变量 BUNDLE_ID）"
+        required: false
+        default: ""
+      app_group:
+        description: "App Group（留空用仓库变量 WQ_APP_GROUP）"
+        required: false
+        default: ""
+
+env:
+  SCHEME: mt2ios
+  PROJECT: mt2ios.xcodeproj
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: xcodebuild (unsigned)
+    runs-on: macos-latest
+    timeout-minutes: 40
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: 选择最新的 Xcode
+        run: |
+          echo "默认: $(xcodebuild -version | head -1)"
+          LATEST=$(ls -d /Applications/Xcode*.app 2>/dev/null | sort -V | tail -1 || true)
+          if [ -n "$LATEST" ]; then
+            echo "切换: $LATEST"
+            sudo xcode-select -s "$LATEST"
+          fi
+          xcodebuild -version
+          sw_vers
+
+      - name: 安装 XcodeGen
+        run: |
+          brew install xcodegen || brew upgrade xcodegen
+          xcodegen --version
+
+      - name: 生成 Xcode 工程
+        env:
+          BUNDLE_ID: ${{ github.event.inputs.bundle_id || vars.BUNDLE_ID || 'com.example.mt2ios' }}
+          APP_GROUP: ${{ github.event.inputs.app_group || vars.WQ_APP_GROUP || 'group.com.example.mt2ios.WQ' }}
+        run: |
+          echo "Bundle ID : $BUNDLE_ID"
+          echo "App Group : $APP_GROUP"
+          xcodegen generate
+          echo "BUNDLE_ID=$BUNDLE_ID" >> "$GITHUB_ENV"
+          echo "APP_GROUP=$APP_GROUP" >> "$GITHUB_ENV"
+
+      - name: 编译（不签名）
+        run: |
+          set -o pipefail
+          xcodebuild \
+            -project "$PROJECT" \
+            -scheme "$SCHEME" \
+            -configuration Release \
+            -sdk iphoneos \
+            -derivedDataPath build \
+            -destination 'generic/platform=iOS' \
+            PRODUCT_BUNDLE_IDENTIFIER="$BUNDLE_ID" \
+            WQ_APP_GROUP="$APP_GROUP" \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY="" \
+            CODE_SIGN_ENTITLEMENTS="" \
+            build 2>&1 | tee build.log | tail -n 200
+
+      - name: 打包 ipa
+        run: |
+          set -euo pipefail
+          APP=$(find build/Build/Products/Release-iphoneos -maxdepth 1 -name "*.app" | head -1)
+          if [ -z "$APP" ]; then echo "没找到 .app"; exit 1; fi
+          echo "产物: $APP"
+
+          rm -rf out && mkdir -p out/Payload
+          cp -R "$APP" out/Payload/
+          # 重签工具需要这份 entitlements，一并带出去
+          cp mt2ios.entitlements out/MT2iOS.entitlements
+          cat > out/BUILD-INFO.txt <<EOF
+          commit      : ${GITHUB_SHA}
+          ref         : ${GITHUB_REF}
+          bundle id   : ${BUNDLE_ID}
+          app group   : ${APP_GROUP}
+          built at    : $(date -u +"%Y-%m-%dT%H:%M:%SZ")
+          xcode       : $(xcodebuild -version | head -1)
+          signed      : NO（安装前需要用自己的证书重签）
+          EOF
+
+          (cd out && zip -qry "MT2iOS-${GITHUB_SHA::7}-unsigned.ipa" Payload)
+          ls -lh out
+
+      - name: 上传 artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: MT2iOS-ipa
+          path: |
+            out/*.ipa
+            out/MT2iOS.entitlements
+            out/BUILD-INFO.txt
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: 编译日志（失败时）
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-log
+          path: build.log
+          if-no-files-found: ignore

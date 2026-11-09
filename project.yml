@@ -1,0 +1,52 @@
+name: mt2ios
+options:
+  bundleIdPrefix: com.example
+  createIntermediateGroups: true
+  deploymentTarget:
+    iOS: "17.0"
+  groupSortPosition: top
+
+settings:
+  base:
+    SWIFT_VERSION: "5.0"
+    SWIFT_STRICT_CONCURRENCY: minimal
+    ENABLE_USER_SCRIPT_SANDBOXING: NO
+    CLANG_ENABLE_OBJC_ARC: YES
+    # 必须和描述文件里的 App Group 完全一致，改这里就行
+    WQ_APP_GROUP: group.com.example.mt2ios.WQ
+    DEVELOPMENT_TEAM: ""
+
+targets:
+  mt2ios:
+    type: application
+    platform: iOS
+    deploymentTarget: "17.0"
+    sources:
+      - path: Sources
+        excludes:
+          - "**/.DS_Store"
+    settings:
+      base:
+        PRODUCT_NAME: MT2iOS
+        PRODUCT_BUNDLE_IDENTIFIER: com.example.mt2ios
+        INFOPLIST_FILE: Resources/Info.plist
+        GENERATE_INFOPLIST_FILE: NO
+        CODE_SIGN_ENTITLEMENTS: mt2ios.entitlements
+        CODE_SIGN_STYLE: Automatic
+        SWIFT_OBJC_BRIDGING_HEADER: Sources/Exploit/MT2iOS-Bridging-Header.h
+        TARGETED_DEVICE_FAMILY: "1,2"
+        ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME: ""
+        ENABLE_BITCODE: NO
+        ONLY_ACTIVE_ARCH: NO
+    dependencies:
+      - sdk: Security.framework
+
+schemes:
+  mt2ios:
+    build:
+      targets:
+        mt2ios: all
+    run:
+      config: Debug
+    archive:
+      config: Release

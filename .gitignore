@@ -1,0 +1,19 @@
+# macOS / Xcode
+build/
+DerivedData/
+*.xcuserstate
+xcuserdata/
+*.xcworkspace/xcshareddata/IDEWorkspaceChecks.plist
+
+# 产物
+out/
+*.ipa
+*.dSYM.zip
+*.xcarchive
+
+# 系统
+.DS_Store
+Thumbs.db
+
+# 日志
+*.log

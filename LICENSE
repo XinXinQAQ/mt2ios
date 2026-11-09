@@ -1,0 +1,24 @@
+MT2iOS
+======
+
+Copyright (C) 2026 MT2iOS contributors
+
+本项目的界面与交互设计参考 AutFeng/MT2（Android，MT 管理器仿写项目）。
+
+Sources/Exploit/worse_query.{h,m} 的技术与原始实现来自：
+  - forcequit (Taj C)  —  https://github.com/forcequitOS/worse_query
+  - 0xjohnny            —  同一漏洞的复现工作
+上述原始实现以 GPL-3.0 分发。本仓库中该文件为按同一调用约定的重写实现，
+因此整体同样按 GNU General Public License v3.0 分发。
+
+This program is free software: you can redistribute it and/or modify
+it under the terms of the GNU General Public License as published by
+the Free Software Foundation, either version 3 of the License, or
+(at your option) any later version.
+
+This program is distributed in the hope that it will be useful,
+but WITHOUT ANY WARRANTY; without even the implied warranty of
+MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+GNU General Public License for more details.
+
+完整许可文本: https://www.gnu.org/licenses/gpl-3.0.txt
