@@ -33,7 +33,7 @@ public enum SandboxFS {
             return .failure(FSMessage(error))
         }
         guard let names = try? fm.contentsOfDirectory(atPath: path) else {
-            return .failure("无法读取目录\n\(path)")
+            return .failure(FSMessage("无法读取目录\n\(path)"))
         }
 
         var items: [FSItem] = []
@@ -94,7 +94,7 @@ public enum SandboxFS {
     public static func data(at path: String, limit: Int = 2_000_000) -> FSResult<Data> {
         if let error = SandboxEscape.shared.ensureAccess(to: path) { return .failure(FSMessage(error)) }
         guard let handle = FileHandle(forReadingAtPath: path) else {
-            return .failure("打不开文件\n\(path)")
+            return .failure(FSMessage("打不开文件\n\(path)"))
         }
         defer { try? handle.close() }
         do {

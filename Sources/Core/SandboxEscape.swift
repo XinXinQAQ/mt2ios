@@ -9,7 +9,6 @@
 //
 
 import Foundation
-import Security
 
 public final class SandboxEscape {
     public static let shared = SandboxEscape()
@@ -45,9 +44,9 @@ public final class SandboxEscape {
     }
 
     private static func groupFromEntitlements() -> String? {
-        guard let task = SecTaskCreateFromSelf(nil) else { return nil }
-        let value = SecTaskCopyValueForEntitlement(task, "com.apple.security.application-groups" as CFString, nil)
-        return (value as? [String])?.first
+        // SecTask 是私有 API，声明放在 Sources/Exploit/EntitlementsShim.m 里。
+        guard let group = MTFirstAppGroup(), !group.isEmpty else { return nil }
+        return group
     }
 
     private static func groupFromInfoPlist() -> String? {
